@@ -8,8 +8,7 @@ import wikidata
 import sqlite3
 
 class TweetStore:
-    def __init__(self,auth='twitter_creds.json', db='tweets.db', table='mention',
-                      handle='mooglebots', type='status'):
+    def __init__(self,auth='twitter_creds.json', handle, db, table='tweet', type='status'):
         db_exists = os.path.exists(db)
         self.con = sqlite3.connect(db)
         if not db_exists:
@@ -27,13 +26,14 @@ class TweetStore:
 
     def init_db(self):
         cur = self.con.cursor()
-        cur.execute('create table if not exists %s (id int, screenname text, created int, text text)' % self.table)
+        cur.execute('create table if not exists %s (id int, created int, handle text, text text, reply int)' % self.table)
 
-    def sync_batch(self,batch=200,delay=1):
+    def sync_batch(self,when='newest'):
         cur = self.con.cursor()
 
-        (since_id,) = cur.execute('select max(id) from %s' % self.table).fetchone()
-        stats = self.api.GetMentions(since_id=since_id)
+        (max_id,since_id) = cur.execute('select min(id),max(id) from mention').fetchone()
+        args = {'since_id': since_id} if when == 'newest' else {'max_id': max_id}
+        stats = self.api.GetMentions(**args)
         nrets = len(stats)
 
         print('Fetched %d tweets' % nrets)
@@ -41,9 +41,23 @@ class TweetStore:
             return 0
 
         cur.executemany('insert into mention values (?,?,?,?)',
-            [(st.id, st.user.screen_name, st.created_at_in_seconds, st.text) for st in stats])
-        cur.executemany('insert into convo values (?,?,?)',
-            [(st.id, 0, '') for st in stats])
+            [(st.id, st.created_at_in_seconds, st.user.screen_name, st.text, None) for st in stats])
         self.con.commit()
 
         return nrets
+
+    def sync_all(self,when='newest'):
+        done_old = False
+        done_new = False
+        for i in range(RATE_LIMIT):
+            if not done_old and when in (None,'oldest'):
+                nrets = self.sync_batch(when='oldest')
+                if nrets == 0:
+                    done_old = True
+            if not done_new and when in (None,'newest'):
+                nrets = self.sync_batch(when='newest')
+                if nrets == 0:
+                    done_new = True
+            if (when == 'oldest' and done_old) or (when == 'newest' and done_new) or (when is None and done_old and done_new):
+                return True
+        return False
