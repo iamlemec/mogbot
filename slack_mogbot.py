@@ -5,7 +5,7 @@ import slackclient
 import wikidata
 
 # api key
-with open('slack_token.txt') as f:
+with open('creds/slack_token.txt') as f:
     token = f.read().strip()
 
 # connect to server

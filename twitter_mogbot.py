@@ -52,13 +52,15 @@ class MogbotLogger(tweepy.StreamListener):
 
 # connection object
 class Mogbot:
-    def __init__(self,auth='twitter_creds.json', db='tweets.db', handle='mooglebots'):
+    def __init__(self, db='tweets.db', handle='mooglebots', auth=None):
         db_exists = os.path.exists(db)
         self.con = sqlite3.connect(db)
         if not db_exists:
             self.init_db()
         self.queue = Queue()
 
+        if auth is None:
+            auth = os.path.join('creds', '%s.json' % handle)
         with open(auth) as f:
             creds = json.load(f)
         auth = tweepy.OAuthHandler(creds['consumer_key'], creds['consumer_secret'])
