@@ -7,8 +7,13 @@ import twitter
 import wikidata
 import sqlite3
 
+RATE_LIMIT = 15
+
 class TweetStore:
     def __init__(self, handle, db, table='tweet', auth=None):
+        self.handle = handle
+        self.table = table
+
         db_exists = os.path.exists(db)
         self.con = sqlite3.connect(db)
         if not db_exists:
@@ -20,47 +25,77 @@ class TweetStore:
             creds = json.load(f)
         self.api = twitter.Api(**creds)
 
-        self.handle = handle
-        self.table = table
-
     def __del__(self):
         self.con.close()
 
     def init_db(self):
         cur = self.con.cursor()
-        cur.execute('create table if not exists %s (id int, created int, handle text, text text, reply int)' % self.table)
+        cur.execute('create table if not exists %s (id int, created int, handle text, body text)' % self.table)
         cur.execute('create unique index if not exists tid on %s (id)' % self.table)
+        self.con.commit()
 
     def sync_batch(self,when='newest'):
         cur = self.con.cursor()
 
-        (max_id, since_id) = cur.execute('select min(id),max(id) from %s' % self.table).fetchone()
-        args = {'since_id': since_id} if when == 'newest' else {'max_id': max_id}
-        stats = self.api.GetUserTimeline(**args)
+        (min_id, max_id) = cur.execute('select min(id),max(id) from %s' % self.table).fetchone()
+        if when == 'newest':
+            args = {'since_id': max_id}
+        else:
+            args = {'max_id': min_id - 1 if min_id is not None else None}
+        stats = self.api.GetUserTimeline(screen_name=self.handle, include_rts=False, exclude_replies=True,
+                                         trim_user=True, count=200, **args)
         nrets = len(stats)
 
-        print('Fetched %d tweets' % nrets)
+        print('Fetched %d %s tweets' % (nrets, when))
         if nrets == 0:
             return 0
 
         cur.executemany('insert or replace into %s values (?,?,?,?)' % self.table,
-            [(st.id, st.created_at_in_seconds, st.user.screen_name, st.text, None) for st in stats])
+            [(st.id, st.created_at_in_seconds, self.handle, st.text) for st in stats])
         self.con.commit()
 
         return nrets
 
-    def sync_all(self,when='newest'):
-        done_old = False
-        done_new = False
+    def sync_all(self,when=None):
+        done_old = (when == 'newest')
+        done_new = (when == 'oldest')
         for i in range(RATE_LIMIT):
-            if not done_old and when in (None,'oldest'):
+            if not done_old:
                 nrets = self.sync_batch(when='oldest')
                 if nrets == 0:
                     done_old = True
-            if not done_new and when in (None,'newest'):
+                time.sleep(1)
+            if not done_new:
                 nrets = self.sync_batch(when='newest')
                 if nrets == 0:
                     done_new = True
-            if (when == 'oldest' and done_old) or (when == 'newest' and done_new) or (when is None and done_old and done_new):
+                time.sleep(1)
+            if done_old and done_new:
                 return True
         return False
+
+class TweetView:
+    def __init__(self, db, table='tweet', auth=None):
+        self.table = table
+
+        if not os.path.exists(db):
+            raise('Database does not exist')
+        self.con = sqlite3.connect(db)
+
+    def __del__(self):
+        self.con.close()
+
+    def fetch(self):
+        cur = self.con.cursor()
+        cur.execute('select * from %s' % self.table)
+        return cur
+
+    def fetchmany(self, limit=10):
+        cur = self.con.cursor()
+        cur.execute('select * from %s limit %d' % (self.table, limit))
+        return cur.fetchall()
+
+    def fetchall(self):
+        cur = self.con.cursor()
+        cur.execute('select * from %s' % self.table)
+        return cur.fetchall()
